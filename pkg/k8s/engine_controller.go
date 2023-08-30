@@ -151,15 +151,27 @@ func (c *EngineController) sync() error {
 	c.nodeInfos = make(map[types.NodeName]*v1alpha1.NodeInfo)
 
 	for i := range gws.Items {
-		// try to update public IP if empty.
 		gw := &gws.Items[i]
-		if ep := gw.Status.ActiveEndpoint; ep != nil && ep.PublicIP == "" {
-			err := c.configGatewayPublicIP(gw)
-			if err != nil {
-				klog.ErrorS(err, "error config gateway public ip", "gateway", klog.KObj(gw))
+		if ep := gw.Status.ActiveEndpoint; ep != nil {
+			if ep.PublicIP == "" || ep.NATType == "" || ep.PublicPort == 0 {
+				// try to update public IP if empty.
+				if ep.PublicIP == "" {
+					err := c.configGatewayPublicIP(gw)
+					if err != nil {
+						klog.ErrorS(err, "error config gateway public ip", "gateway", klog.KObj(gw))
+					}
+				}
+				// try to update NAT type if empty
+				if ep.NATType == "" || ep.PublicPort == 0 {
+					err := c.configGatewayStun(gw)
+					if err != nil {
+						klog.ErrorS(err, "error config gateway nat type", "gateway", klog.KObj(gw))
+					}
+				}
+				continue
 			}
-			continue
 		}
+
 		if !c.shouldHandleGateway(gw) {
 			continue
 		}
@@ -229,7 +241,9 @@ func (c *EngineController) syncGateway(gw *v1alpha1.Gateway) {
 		Subnets:     subnets,
 		PrivateIP:   nodeInfo.PrivateIP,
 		PublicIP:    aep.PublicIP,
+		PublicPort:  aep.PublicPort,
 		UnderNAT:    aep.UnderNAT,
+		NATType:     aep.NATType,
 		Config:      cfg,
 	}
 	var isLocalGateway bool
@@ -277,6 +291,12 @@ func (c *EngineController) shouldHandleGateway(gateway *v1alpha1.Gateway) bool {
 		klog.InfoS("no public IP for gateway, waiting for sync", "gateway", klog.KObj(gateway))
 		return false
 	}
+	if gateway.Status.ActiveEndpoint.NATType == "" {
+		klog.InfoS("no nat type for gateway, waiting for sync", "gateway", klog.KObj(gateway))
+	}
+	if gateway.Status.ActiveEndpoint.PublicPort == 0 {
+		klog.InfoS("no public port for gateway, waiting for sync", "gateway", klog.KObj(gateway))
+	}
 	return true
 }
 
@@ -311,6 +331,77 @@ func (c *EngineController) configGatewayPublicIP(gateway *v1alpha1.Gateway) erro
 	})
 	return err
 }
+
+func (c *EngineController) configGatewayStun(gateway *v1alpha1.Gateway) error {
+	if gateway.Status.ActiveEndpoint.NodeName != c.nodeName {
+		return nil
+	}
+
+	natType, err := utils.GetNATType()
+	if err != nil {
+		return err
+	}
+
+	publicPort, err := utils.GetPublicPort()
+	if err != nil {
+		return err
+	}
+
+	// retry to update nat type of localGateway
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		// get localGateway from api server
+		var apiGw v1alpha1.Gateway
+		err := c.ravenClient.Get(context.Background(), client.ObjectKey{
+			Name: gateway.Name,
+		}, &apiGw)
+		if err != nil {
+			return err
+		}
+		for k, v := range apiGw.Spec.Endpoints {
+			if v.NodeName == c.nodeName {
+				apiGw.Spec.Endpoints[k].NATType = natType
+				apiGw.Spec.Endpoints[k].PublicPort = publicPort
+				err = c.ravenClient.Update(context.Background(), &apiGw)
+				return err
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+// func (c *EngineController) configGatewayPublicPort(gateway *v1alpha1.Gateway) error {
+// 	if gateway.Status.ActiveEndpoint.NodeName != c.nodeName {
+// 		return nil
+// 	}
+
+// 	natType, err := utils.GetNATType()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	klog.Infof("natType: %s\n", natType)
+
+// 	// retry to update nat type of localGateway
+// 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+// 		// get localGateway from api server
+// 		var apiGw v1alpha1.Gateway
+// 		err := c.ravenClient.Get(context.Background(), client.ObjectKey{
+// 			Name: gateway.Name,
+// 		}, &apiGw)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		for k, v := range apiGw.Spec.Endpoints {
+// 			if v.NodeName == c.nodeName {
+// 				apiGw.Spec.Endpoints[k].NATType = natType
+// 				err = c.ravenClient.Update(context.Background(), &apiGw)
+// 				return err
+// 			}
+// 		}
+// 		return nil
+// 	})
+// 	return err
+// }
 
 func (c *EngineController) addGateway(e event.CreateEvent) bool {
 	gw, ok := e.Object.(*v1alpha1.Gateway)

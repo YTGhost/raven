@@ -74,9 +74,10 @@ type wireguard struct {
 	psk        wgtypes.Key
 	wgLink     netlink.Link
 
-	connections map[string]*vpndriver.Connection
-	nodeName    types.NodeName
-	ravenClient client.Client
+	connections     map[string]*vpndriver.Connection
+	edgeConnections map[string]*vpndriver.Connection
+	nodeName        types.NodeName
+	ravenClient     client.Client
 }
 
 func New(cfg *config.Config) (vpndriver.Driver, error) {
@@ -198,6 +199,67 @@ func (w *wireguard) ensureWgLink(network *types.Network, routeDriverMTUFn func(*
 	return nil
 }
 
+func (w *wireguard) createEdgeToEdgeTunnels(network *types.Network) error {
+	desiredEdgeConnections := w.computeDesiredEdgeConnections(network)
+	if len(desiredEdgeConnections) == 0 {
+		klog.Infof("no desired edge-to-edge connections")
+		return nil
+	}
+
+	for connName, connection := range w.edgeConnections {
+		if _, ok := desiredEdgeConnections[connName]; !ok {
+			remoteKey := keyFromEndpoint(connection.RemoteEndpoint)
+			if err := w.removePeer(remoteKey); err == nil {
+				delete(w.edgeConnections, connName)
+			}
+		}
+	}
+
+	peerConfigs := make([]wgtypes.PeerConfig, 0)
+	for name, newConn := range desiredEdgeConnections {
+		newKey := keyFromEndpoint(newConn.RemoteEndpoint)
+
+		if oldConn, ok := w.edgeConnections[name]; ok {
+			oldKey := keyFromEndpoint(oldConn.RemoteEndpoint)
+			if oldKey.String() != newKey.String() {
+				if err := w.removePeer(oldKey); err == nil {
+					delete(w.edgeConnections, name)
+				}
+			}
+		}
+
+		klog.InfoS("create edge-to-edge connection", "c", newConn)
+
+		allowedIPs := parseSubnets(newConn.RemoteEndpoint.Subnets)
+		remotePort := newConn.RemoteEndpoint.PublicPort
+		ka := KeepAliveInterval
+		peerConfigs = append(peerConfigs, wgtypes.PeerConfig{
+			PublicKey:    *newKey,
+			Remove:       false,
+			UpdateOnly:   false,
+			PresharedKey: &w.psk,
+			Endpoint: &net.UDPAddr{
+				IP:   net.ParseIP(newConn.RemoteEndpoint.PublicIP),
+				Port: remotePort,
+			},
+			PersistentKeepaliveInterval: &ka,
+			ReplaceAllowedIPs:           true,
+			AllowedIPs:                  allowedIPs,
+		})
+	}
+
+	if err := w.wgClient.ConfigureDevice(DeviceName, wgtypes.Config{
+		ReplacePeers: true,
+		Peers:        peerConfigs,
+	}); err != nil {
+		return fmt.Errorf("error add peers: %v", err)
+	}
+
+	w.edgeConnections = desiredEdgeConnections
+
+	return nil
+}
+
 func (w *wireguard) Apply(network *types.Network, routeDriverMTUFn func(*types.Network) (int, error)) error {
 	if network.LocalEndpoint == nil || len(network.RemoteEndpoints) == 0 {
 		klog.Info("no local gateway or remote gateway is found, cleaning vpn connections")
@@ -215,15 +277,15 @@ func (w *wireguard) Apply(network *types.Network, routeDriverMTUFn func(*types.N
 		}
 		return errors.New("retry to config public key")
 	}
-	// 1. Compute desiredConnections
-	centralGw := findCentralGw(network)
-	desiredConnections, centralAllowedIPs := w.computeDesiredConnections(network)
-	if len(desiredConnections) == 0 {
-		klog.Infof("no desired connections, cleaning vpn connections")
-		return w.Cleanup()
-	}
 
-	// 2. Ensure  WireGuard link
+	// // 1. Compute desiredConnections
+	// desiredConnections, centralAllowedIPs := w.computeDesiredConnections(network)
+	// if len(desiredConnections) == 0 {
+	// 	klog.Infof("no desired connections, cleaning vpn connections")
+	// 	return w.Cleanup()
+	// }
+
+	// 2. Ensure WireGuard link
 	if err := w.ensureWgLink(network, routeDriverMTUFn); err != nil {
 		return fmt.Errorf("fail to ensure wireguar link: %v", err)
 	}
@@ -250,62 +312,85 @@ func (w *wireguard) Apply(network *types.Network, routeDriverMTUFn func(*types.N
 		return fmt.Errorf("error applying wireguard rules: %s", err)
 	}
 
-	// 4. delete unwanted connections
-	for connName, connection := range w.connections {
-		if _, ok := desiredConnections[connName]; !ok {
-			remoteKey := keyFromEndpoint(connection.RemoteEndpoint)
-			if err := w.removePeer(remoteKey); err == nil {
-				delete(w.connections, connName)
-			}
-		}
+	// create edge-to-edge VPN tunnels as possible
+	if err := w.createEdgeToEdgeTunnels(network); err != nil {
+		return fmt.Errorf("error create edge-to-edge VPN tunnels: %v", err)
 	}
 
-	// 5. add or update connections
-	peerConfigs := make([]wgtypes.PeerConfig, 0)
-	for name, newConn := range desiredConnections {
-		newKey := keyFromEndpoint(newConn.RemoteEndpoint)
+	centralGw := findCentralGw(network)
 
-		if oldConn, ok := w.connections[name]; ok {
-			oldKey := keyFromEndpoint(oldConn.RemoteEndpoint)
-			if oldKey.String() != newKey.String() {
-				if err := w.removePeer(oldKey); err == nil {
-					delete(w.connections, name)
-				}
-			}
-		}
-
-		klog.InfoS("create connection", "c", newConn)
-
-		allowedIPs := parseSubnets(newConn.RemoteEndpoint.Subnets)
-		if newConn.RemoteEndpoint.NodeName == centralGw.NodeName {
-			allowedIPs = append(allowedIPs, parseSubnets(centralAllowedIPs)...)
-		}
-
-		remotePort := ListenPort
-		ka := KeepAliveInterval
-		peerConfigs = append(peerConfigs, wgtypes.PeerConfig{
-			PublicKey:    *newKey,
-			Remove:       false,
-			UpdateOnly:   false,
-			PresharedKey: &w.psk,
-			Endpoint: &net.UDPAddr{
-				IP:   net.ParseIP(newConn.RemoteEndpoint.PublicIP),
-				Port: remotePort,
-			},
-			PersistentKeepaliveInterval: &ka,
-			ReplaceAllowedIPs:           true,
-			AllowedIPs:                  allowedIPs,
-		})
+	if centralGw != nil {
+		
 	}
 
-	if err := w.wgClient.ConfigureDevice(DeviceName, wgtypes.Config{
-		ReplacePeers: false,
-		Peers:        peerConfigs,
-	}); err != nil {
-		return fmt.Errorf("error add peers: %v", err)
-	}
+	// // 4. delete unwanted connections
+	// for connName, connection := range w.connections {
+	// 	if _, ok := desiredConnections[connName]; !ok {
+	// 		remoteKey := keyFromEndpoint(connection.RemoteEndpoint)
+	// 		if err := w.removePeer(remoteKey); err == nil {
+	// 			delete(w.connections, connName)
+	// 		}
+	// 	}
+	// }
 
-	w.connections = desiredConnections
+	// // 5. add or update connections
+	// peerConfigs := make([]wgtypes.PeerConfig, 0)
+	// for name, newConn := range desiredConnections {
+	// 	newKey := keyFromEndpoint(newConn.RemoteEndpoint)
+
+	// 	if oldConn, ok := w.connections[name]; ok {
+	// 		oldKey := keyFromEndpoint(oldConn.RemoteEndpoint)
+	// 		if oldKey.String() != newKey.String() {
+	// 			if err := w.removePeer(oldKey); err == nil {
+	// 				delete(w.connections, name)
+	// 			}
+	// 		}
+	// 	}
+
+	// 	klog.InfoS("create connection", "c", newConn)
+
+	// 	allowedIPs := parseSubnets(newConn.RemoteEndpoint.Subnets)
+	// 	if newConn.RemoteEndpoint.NodeName == centralGw.NodeName {
+	// 		allowedIPs = append(allowedIPs, parseSubnets(centralAllowedIPs)...)
+	// 	}
+
+	// 	remotePort := ListenPort
+	// 	ka := KeepAliveInterval
+	// 	peerConfigs = append(peerConfigs, wgtypes.PeerConfig{
+	// 		PublicKey:    *newKey,
+	// 		Remove:       false,
+	// 		UpdateOnly:   false,
+	// 		PresharedKey: &w.psk,
+	// 		Endpoint: &net.UDPAddr{
+	// 			IP:   net.ParseIP(newConn.RemoteEndpoint.PublicIP),
+	// 			Port: remotePort,
+	// 		},
+	// 		PersistentKeepaliveInterval: &ka,
+	// 		ReplaceAllowedIPs:           true,
+	// 		AllowedIPs:                  allowedIPs,
+	// 	})
+	// }
+
+	// if err := w.wgClient.ConfigureDevice(DeviceName, wgtypes.Config{
+	// 	ReplacePeers: false,
+	// 	Peers:        peerConfigs,
+	// }); err != nil {
+	// 	return fmt.Errorf("error add peers: %v", err)
+	// }
+
+	// w.connections = desiredConnections
+
+	// if centralGw.NodeName == w.nodeName {
+	// 	// 6. ensure a successful handshake with each peer
+	// 	if err := w.ensureHandShake(); err != nil {
+	// 		return fmt.Errorf("not all peers have a successful handshake")
+	// 	}
+
+	// 	// 7. update the public port for each edge Gateway node
+	// 	if err := w.updateEachEdgeGwPublicPort(); err != nil {
+	// 		return fmt.Errorf("error update each gateway nodes public port: %v", err)
+	// 	}
+	// }
 
 	return nil
 }
@@ -340,7 +425,9 @@ func (w *wireguard) Cleanup() error {
 	if err = netlink.LinkDel(link); err != nil {
 		errList = errList.Append(fmt.Errorf("error delete existing wireguard device %q: %v", DeviceName, err))
 	}
+
 	w.connections = make(map[string]*vpndriver.Connection)
+	w.edgeConnections = make(map[string]*vpndriver.Connection)
 	return errList.AsError()
 }
 
@@ -368,6 +455,24 @@ func (w *wireguard) computeDesiredConnections(network *types.Network) (map[strin
 		}
 	}
 	return desiredConns, centralAllowedIPs
+}
+
+func (w *wireguard) computeDesiredEdgeConnections(network *types.Network) map[string]*vpndriver.Connection {
+	// This is the desired edge connection calculated from given *types.Network
+	desiredConns := make(map[string]*vpndriver.Connection)
+	for _, remote := range network.RemoteEndpoints {
+		if _, ok := remote.Config[PublicKey]; !ok {
+			continue
+		}
+		if enableCreateEdgeConnection(network.LocalEndpoint, remote) {
+			name := connectionName(string(network.LocalEndpoint.NodeName), string(remote.NodeName))
+			desiredConns[name] = &vpndriver.Connection{
+				LocalEndpoint:  network.LocalEndpoint.Copy(),
+				RemoteEndpoint: remote.Copy(),
+			}
+		}
+	}
+	return desiredConns
 }
 
 func (w *wireguard) removePeer(key *wgtypes.Key) error {
@@ -477,4 +582,14 @@ func parseSubnets(subnets []string) []net.IPNet {
 		nets = append(nets, *cidr)
 	}
 	return nets
+}
+
+// enableCreateEdgeConnection determine whether VPN tunnels can be established between edges
+func enableCreateEdgeConnection(localEndpoint *types.Endpoint, remoteEndpoint *types.Endpoint) bool {
+	if localEndpoint.NATType == "Undefined" || remoteEndpoint.NATType == "Undefined" {
+		return false
+	}
+	return !((localEndpoint.NATType == "Symmetric NAT" && remoteEndpoint.NATType == "Symmetric NAT") ||
+		(localEndpoint.NATType == "Symmetric NAT" && remoteEndpoint.NATType == "Port Restricted cone NAT") ||
+		(localEndpoint.NATType == "Port Restricted cone NAT" && remoteEndpoint.NATType == "Symmetric NAT"))
 }

@@ -4,12 +4,13 @@ go 1.18
 
 require (
 	github.com/EvilSuperstars/go-cidrman v0.0.0-20190607145828-28e79e32899a
+	github.com/ccding/go-stun v0.1.4
 	github.com/coreos/go-iptables v0.6.0
 	github.com/openyurtio/openyurt v1.3.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v1.7.0
 	github.com/spf13/pflag v1.0.5
-	github.com/stretchr/testify v1.8.3
+	github.com/stretchr/testify v1.8.4
 	github.com/vdobler/ht v5.3.0+incompatible
 	github.com/vishvananda/netlink v1.2.1-beta.2
 	golang.org/x/sys v0.10.0
@@ -63,7 +64,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.15.0 // indirect
+	github.com/prometheus/client_golang v1.15.1 // indirect
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
@@ -86,17 +87,17 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.24.0 // indirect
 	golang.org/x/crypto v0.5.0 // indirect
-	golang.org/x/net v0.8.0 // indirect
-	golang.org/x/oauth2 v0.5.0 // indirect
+	golang.org/x/net v0.9.0 // indirect
+	golang.org/x/oauth2 v0.7.0 // indirect
 	golang.org/x/sync v0.1.0 // indirect
-	golang.org/x/term v0.6.0 // indirect
-	golang.org/x/text v0.8.0 // indirect
+	golang.org/x/term v0.7.0 // indirect
+	golang.org/x/text v0.9.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20220407013110-ef5c587f782d // indirect
 	gomodules.xyz/jsonpatch/v2 v2.2.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/genproto v0.0.0-20230110181048-76db0878b65f // indirect
-	google.golang.org/grpc v1.54.0 // indirect
+	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
+	google.golang.org/grpc v1.56.2 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
@@ -109,4 +110,9 @@ require (
 	sigs.k8s.io/json v0.0.0-20211020170558-c049b76a60c6 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.1 // indirect
 	sigs.k8s.io/yaml v1.3.0 // indirect
+)
+
+replace (
+	github.com/ccding/go-stun v0.1.4 => github.com/YTGhost/go-stun v0.0.0-20230830024530-ae4d4f4925ee
+	github.com/openyurtio/openyurt v1.3.0 => github.com/YTGhost/openyurt v0.0.0-20230808084130-000450a3e6fd
 )

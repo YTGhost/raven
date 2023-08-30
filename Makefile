@@ -1,6 +1,6 @@
 
 # Image URL to use all building/pushing image targets
-IMG ?= openyurt/raven-agent:latest
+IMG ?= registry.cn-shanghai.aliyuncs.com/hihia/raven:v1.0
 VPN_DRIVER ?= libreswan
 FORWARD_NODE_IP ?= false
 METRIC_BIND_ADDR ?= ":8080"
@@ -57,7 +57,7 @@ run: fmt vet ## Run a controller from your host.
 	go run cmd/agent/main.go
 
 docker-build:## Build docker image with the agent.
-	docker build --platform=${BUILDPLATFORM} --build-arg TARGETOS=${TARGETOS} --build-arg TARGETARCH=${TARGETARCH} -t ${IMG} .
+	docker build --platform=${BUILDPLATFORM} --build-arg TARGETOS=${TARGETOS} --build-arg TARGETARCH=${TARGETARCH} --build-arg HTTP_PROXY=http://127.0.0.1:7890 --build-arg HTTPS_PROXY=http://127.0.0.1:7890 --network host -t ${IMG} .
 
 docker-push: ## Push docker image with the agent.
 	docker push ${IMG}

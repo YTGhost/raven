@@ -19,7 +19,7 @@ spec:
       serviceAccountName: agent-account
       containers:
         - name: raven-agent
-          image: raven-agent:latest
+          image: registry.cn-shanghai.aliyuncs.com/hihia/raven:v1.0
           imagePullPolicy: Always
           securityContext:
             privileged: true
