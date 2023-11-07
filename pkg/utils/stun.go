@@ -14,45 +14,50 @@
  * limitations under the License.
  */
 
- package utils
+package utils
 
- import (
-	 "fmt"
- 
-	 "github.com/ccding/go-stun/stun"
- )
- 
- var (
-	 stunAPIs = [...]string{
-		 "stun.qq.com:3478",
-		 "stun.miwifi.com:3478",
-	 }
-	 stunClient *stun.Client
- )
- 
- func init() {
-	 stunClient = stun.NewClient()
-	 stunClient.SetLocalPort(DefaultVPNPort)
- }
- 
- func GetNATType() (string, error) {
-	 for _, api := range stunAPIs {
-		 stunClient.SetServerAddr(api)
-		 natBehavior, err := stunClient.BehaviorTest()
-		 if err == nil {
-			 return natBehavior.NormalType(), nil
-		 }
-	 }
-	 return "", fmt.Errorf("error get nat type by any of the apis: %v", stunAPIs)
- }
- 
- func GetPublicPort() (int, error) {
-	 for _, api := range stunAPIs {
-		 stunClient.SetServerAddr(api)
-		 _, host, err := stunClient.Discover()
-		 if err == nil {
-			 return int(host.Port()), nil
-		 }
-	 }
-	 return 0, fmt.Errorf("error get public port by any of the apis: %v", stunAPIs)
- }
+import (
+	"fmt"
+
+	"github.com/ccding/go-stun/stun"
+	"github.com/vdobler/ht/errorlist"
+)
+
+var (
+	stunAPIs = [...]string{
+		"stun.qq.com:3478",
+		"stun.miwifi.com:3478",
+	}
+	stunClient *stun.Client
+)
+
+func init() {
+	stunClient = stun.NewClient()
+	stunClient.SetLocalPort(4500)
+}
+
+func GetNATType() (string, error) {
+	errList := errorlist.List{}
+	for _, api := range stunAPIs {
+		stunClient.SetServerAddr(api)
+		natBehavior, err := stunClient.BehaviorTest()
+		if err == nil {
+			return natBehavior.NormalType(), nil
+		}
+		errList = errList.Append(err)
+	}
+	return "", fmt.Errorf("error get nat type by any of the apis[%v]: %s", stunAPIs, errList.AsError())
+}
+
+func GetPublicPort() (int, error) {
+	errList := errorlist.List{}
+	for _, api := range stunAPIs {
+		stunClient.SetServerAddr(api)
+		_, host, err := stunClient.Discover()
+		if err == nil {
+			return int(host.Port()), nil
+		}
+		errList = errList.Append(err)
+	}
+	return 0, fmt.Errorf("error get public port by any of the apis[%v]: %s", stunAPIs, errList.AsError())
+}

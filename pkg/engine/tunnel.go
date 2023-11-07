@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -97,7 +99,71 @@ func (t *TunnelEngine) clearDriver() error {
 	return nil
 }
 
+func (t *TunnelEngine) configGatewayListStunInfo() error {
+	var gws v1beta1.GatewayList
+	if err := t.client.List(context.Background(), &gws); err != nil {
+		return err
+	}
+	for i := range gws.Items {
+		// try to update info required by nat traversal
+		gw := &gws.Items[i]
+		if ep := getTunnelActiveEndpoints(gw); ep != nil {
+			if ep.NATType == "" || ep.NATType != utils.NATSymmetric && ep.PublicPort == 0 {
+				err := t.configGatewayStunInfo(gw)
+				if err != nil {
+					klog.ErrorS(err, "error config gateway nat type", "gateway", klog.KObj(gw))
+				}
+			}
+
+		}
+	}
+	return nil
+}
+
+func (t *TunnelEngine) configGatewayStunInfo(gateway *v1beta1.Gateway) error {
+	if getTunnelActiveEndpoints(gateway).NodeName != t.nodeName {
+		return nil
+	}
+
+	natType, err := utils.GetNATType()
+	if err != nil {
+		return err
+	}
+
+	publicPort, err := utils.GetPublicPort()
+	if err != nil {
+		return err
+	}
+
+	// retry to update nat type of localGateway
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		// get localGateway from api server
+		var apiGw v1beta1.Gateway
+		err := t.client.Get(context.Background(), client.ObjectKey{
+			Name: gateway.Name,
+		}, &apiGw)
+		if err != nil {
+			return err
+		}
+		for k, v := range apiGw.Spec.Endpoints {
+			if v.NodeName == t.nodeName {
+				apiGw.Spec.Endpoints[k].NATType = natType
+				if natType != utils.NATSymmetric {
+					apiGw.Spec.Endpoints[k].PublicPort = publicPort
+				}
+				err = t.client.Update(context.Background(), &apiGw)
+				return err
+			}
+		}
+		return nil
+	})
+	return err
+}
+
 func (t *TunnelEngine) reconcile() error {
+	if err := t.configGatewayListStunInfo(); err != nil {
+		return err
+	}
 	if t.routeDriver == nil || t.vpnDriver == nil {
 		err := t.initDriver()
 		if err != nil {
@@ -123,4 +189,13 @@ func (t *TunnelEngine) handleEventErr(err error, event interface{}) {
 	}
 	klog.Info(utils.FormatRavenEngine("dropping event %q out of the queue: %v", event, err))
 	t.queue.Forget(event)
+}
+
+func getTunnelActiveEndpoints(gw *v1beta1.Gateway) *v1beta1.Endpoint {
+	for _, aep := range gw.Status.ActiveEndpoints {
+		if aep.Type == v1beta1.Tunnel {
+			return aep.DeepCopy()
+		}
+	}
+	return nil
 }
