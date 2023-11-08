@@ -160,6 +160,7 @@ func (o *AgentOptions) Config() (*config.Config, error) {
 	}
 	if c.Tunnel.VPNDriver == "" {
 		c.Tunnel.VPNDriver = libreswan.DriverName
+		// c.Tunnel.VPNDriver = wireguard.DriverName
 	}
 	if c.Tunnel.RouteDriver == "" {
 		c.Tunnel.RouteDriver = vxlan.DriverName

@@ -108,13 +108,11 @@ func (t *TunnelEngine) configGatewayListStunInfo() error {
 		// try to update info required by nat traversal
 		gw := &gws.Items[i]
 		if ep := getTunnelActiveEndpoints(gw); ep != nil {
-			if ep.NATType == "" || ep.NATType != utils.NATSymmetric && ep.PublicPort == 0 {
-				err := t.configGatewayStunInfo(gw)
-				if err != nil {
-					klog.ErrorS(err, "error config gateway nat type", "gateway", klog.KObj(gw))
+			if ep.NATType == "" || ep.PublicPort == 0 {
+				if err := t.configGatewayStunInfo(gw); err != nil {
+					return fmt.Errorf("error config gateway nat type: %s", err)
 				}
 			}
-
 		}
 	}
 	return nil
@@ -148,9 +146,7 @@ func (t *TunnelEngine) configGatewayStunInfo(gateway *v1beta1.Gateway) error {
 		for k, v := range apiGw.Spec.Endpoints {
 			if v.NodeName == t.nodeName {
 				apiGw.Spec.Endpoints[k].NATType = natType
-				if natType != utils.NATSymmetric {
-					apiGw.Spec.Endpoints[k].PublicPort = publicPort
-				}
+				apiGw.Spec.Endpoints[k].PublicPort = publicPort
 				err = t.client.Update(context.Background(), &apiGw)
 				return err
 			}

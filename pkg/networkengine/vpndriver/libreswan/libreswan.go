@@ -179,6 +179,8 @@ func (l *libreswan) createConnections(network *types.Network) error {
 		return l.Cleanup()
 	}
 
+	klog.Infof(utils.FormatTunnel("desired edge connections: %+v, desired relay connections: %+v", desiredEdgeConns, desiredRelayConns))
+
 	centralGw := findCentralGw(network)
 	if err := l.createEdgeConnections(desiredEdgeConns); err != nil {
 		return err
